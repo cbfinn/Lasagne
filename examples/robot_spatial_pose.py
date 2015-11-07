@@ -47,16 +47,16 @@ def load_dataset():
     # We can now download and read the training and test set images and labels.
     X_train = load_images('/home/cfinn/data/img_data_test.npy')
     y_train = load_labels('/home/cfinn/data/labels_test.npy')
-    X_test = load_images('/home/cfinn/data/img_data_test_v.npy')
-    y_test = load_labels('/home/cfinn/data/labels_test_v.npy')
+    X_val = load_images('/home/cfinn/data/img_data_test_v.npy')
+    y_val = load_labels('/home/cfinn/data/labels_test_v.npy')
 
     # We reserve the last 100 training examples for validation.
-    X_train, X_val = X_train[:-100], X_train[-100:]
-    y_train, y_val = y_train[:-100], y_train[-100:]
+    #X_train, X_val = X_train[:-100], X_train[-100:]
+    #y_train, y_val = y_train[:-100], y_train[-100:]
 
     # We just return all the arrays in order, as expected in main().
     # (It doesn't matter how we do this as long as we can read them again.)
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train, y_train, X_val, y_val #, X_test, y_test
 
 
 # ##################### Build the neural network model #######################
@@ -159,7 +159,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
 def main(num_epochs=100):
     # Load the dataset
     print("Loading data...")
-    X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
+    X_train, y_train, X_val, y_val = load_dataset()
 
     # Prepare Theano variables for inputs and targets
     input_var = T.tensor4('inputs')
@@ -272,15 +272,15 @@ def main(num_epochs=100):
         print("  validation distance:\t\t{:.6f}".format(val_dist / val_batches))
 
     # After training, we compute and print the test error:
-    test_err = 0
-    test_batches = 0
-    for batch in iterate_minibatches(X_test, y_test, 25, shuffle=False):
-        inputs, targets = batch
-        err = val_fn(inputs, targets)
-        test_err += err
-        test_batches += 1
-    print("Final results:")
-    print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
+    #test_err = 0
+    #test_batches = 0
+    #for batch in iterate_minibatches(X_test, y_test, 25, shuffle=False):
+    #    inputs, targets = batch
+    #    err = val_fn(inputs, targets)
+    #    test_err += err
+    #    test_batches += 1
+    #print("Final results:")
+    #print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
 
     # Optionally, you could now dump the network weights to a file like this:
     np.savez('trained_spatial_model.npz', *lasagne.layers.get_all_param_values(network))

@@ -205,7 +205,7 @@ def main(num_epochs=100):
     test_loss = lasagne.objectives.squared_error(test_prediction,
                                                  target_var)
     #test_loss = test_loss.mean()
-    test_dist = lasagne.objectives.euc_distance(test_prediction,target_var)
+    #test_dist = lasagne.objectives.euc_distance(test_prediction,target_var)
     # As a bonus, also create an expression for the classification accuracy:
     #test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),
     #                  dtype=theano.config.floatX)
@@ -215,7 +215,7 @@ def main(num_epochs=100):
     train_fn = theano.function([input_var, target_var], loss, updates=updates) #, profile=True)
 
     # Compile a second function computing the validation loss and accuracy:
-    val_fn = theano.function([input_var, target_var], [test_loss,test_dist])#, test_acc])
+    val_fn = theano.function([input_var, target_var], test_loss)#, test_acc])
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -245,7 +245,7 @@ def main(num_epochs=100):
         for batch in iterate_minibatches(X_val, y_val, 25, shuffle=False):
             inputs, targets = batch
             #import ipdb; ipdb.set_trace()
-            err,dist = val_fn(inputs, targets)
+            err = val_fn(inputs, targets)
 
             point_dim = 3 # We're in 3D
             num = err.shape[0]

@@ -285,6 +285,52 @@ class Constant(Initializer):
         return floatX(np.ones(shape) * self.val)
 
 
+class Expectation(Initializer):
+    """Initialize weights as an expectation operation.
+    This layer is expecting an NxHxW input (where NxCxHxW should be collapsed down)
+
+    Parameters
+    ----------
+    type : string ('xy' only suppported right now)
+        The type of expectation to perform, xy is an expectation over x and y coordinates
+    width : int
+        The width of the incoming image
+    height : int
+        The height of the incoming image
+    """
+    def __init__(self, type='xy', height=107, width=107):
+        self.type = type
+        self.width = width
+        self.height = height
+
+    def sample(self, shape):
+        if len(shape) != 2:
+            raise RuntimeError(
+                "expectation initializer only works with shapes of length 2")
+
+        w = floatX(np.zeros(shape))
+        n_inputs, n_outputs = shape
+
+        if n_inputs != self.width*self.height:
+            raise RuntimeError(
+                "width and height do not multiply to input dimension")
+        if n_outputs != 2:
+            raise RuntimeError(
+                "expectation initializer currently requires output of size 2 (for x+y)")
+
+        for x in range(self.width):
+            for y in range(self.height):
+                for k in range(n_outputs):
+                    if k == 0:  # output x coordiante
+                        w[y*self.width+x,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
+                        #w[y+x*self.height,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
+                    else:  # output y coordinate
+                        #w[y+x*self.height,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
+                        w[y*self.width+x,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
+
+        return w
+
+
 class Sparse(Initializer):
     """Initialize weights as sparse matrix.
 

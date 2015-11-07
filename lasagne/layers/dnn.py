@@ -1,5 +1,6 @@
 import theano
 from theano.sandbox.cuda import dnn
+from theano.sandbox.cuda.basic_ops import gpu_contiguous
 
 from .. import init
 from .. import nonlinearities
@@ -314,3 +315,38 @@ class Conv2DDNNLayer(DNNLayer):
         else:
             activation = conved + self.b.dimshuffle('x', 0, 'x', 'x')
         return self.nonlinearity(activation)
+
+class SoftmaxDNNLayer(DNNLayer):
+    """
+    lasagne.layers.SoftmaxDNNLayer(incoming, **kwargs)
+
+    Softmax layer
+
+    Performs a softmax on its input.
+    This is an alternative implementation and only works on GPU
+    which uses ``theano.sandbox.cuda.dnn.GpuDnnSoftmax`` directly.
+
+    Parameters
+    ----------
+    incoming : a :class:`Layer` instance or a tuple
+        The layer feeding into this layer, or the expected input shape. The
+        output of this layer should be a 4D tensor, with shape
+        ``(batch_size, num_input_channels, input_rows, input_columns)``.
+
+    algo : string, either 'accurate' or 'fast'
+        specifying the type of cudnn computation
+
+    **kwargs
+        Any additional keyword arguments are passed to the `Layer` superclass.
+
+    """
+    def __init__(self, incoming, algo='accurate', **kwargs):
+        super(SoftmaxDNNLayer, self).__init__(incoming, **kwargs)
+        self.softmax_op = dnn.GpuDnnSoftmax(tensor_format='bc01',mode='instance',algo=algo)
+
+    def get_output_shape_for(self, input_shape):
+        return input_shape
+
+    def get_output_for(self, input, **kwargs):
+        contiguous_input = gpu_contiguous(input)
+        return self.softmax_op(contiguous_input)

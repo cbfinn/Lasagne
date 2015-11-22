@@ -26,7 +26,7 @@ Note that these functions only serve to write more readable code, but are
 completely optional. Essentially, any differentiable scalar Theano expression
 can be used as a training objective.
 
-Finally, two functions compute evaluation measures that are useful for
+Finally, three functions compute evaluation measures that are useful for
 validation and testing only, not for training:
 
 .. autosummary::
@@ -34,6 +34,7 @@ validation and testing only, not for training:
 
    binary_accuracy
    categorical_accuracy
+   euc_distance
 
 Those can also be aggregated into a scalar expression if needed.
 
@@ -87,7 +88,8 @@ __all__ = [
     "binary_hinge_loss",
     "multiclass_hinge_loss",
     "binary_accuracy",
-    "categorical_accuracy"
+    "categorical_accuracy",
+    "euc_distance",
 ]
 
 
@@ -167,6 +169,43 @@ def squared_error(a, b):
     or auto-encoders with linear output units.
     """
     return (a - b)**2
+
+
+def euc_distance(a, b):
+    """Computes the element-wise squared difference between two tensors.
+
+    .. math:: L = (p - t)^2
+
+    Parameters
+    ----------
+    a, b : Theano tensor
+        The tensors to compute the squared difference between.
+
+    Returns
+    -------
+    Theano tensor
+        An expression for the item-wise squared difference.
+
+    Notes
+    -----
+    This assumes we're in 3D
+    """
+    point_dim = 3 # We're in 3D
+    num = a.shape[0]
+    num_points = a.shape[1] / point_dim
+
+    diff = (a-b)**2
+    total_dist = 0.0
+    #import ipdb; ipdb.set_trace()
+    #for i in range(num.eval()):
+        #for n in range(num_points.eval()):
+            #offset = n*point_dim
+            #my_dist = 0
+            #for k in range(point_dim):
+                #my_dist += diff[i,offset+k].eval()
+            #total_dist += sqrt(my_dist)
+
+    return total_dist / (num*num_points)
 
 
 def aggregate(loss, weights=None, mode='mean'):

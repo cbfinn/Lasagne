@@ -84,7 +84,7 @@ def load_dataset():
 # function that takes a Theano variable representing the input and returns
 # the output layer of a neural network model built in Lasagne.
 
-def build_cnn(input_var=None, get_fp=False):
+def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
     # As a third model, we'll create a CNN of three convolution + pooling stages
     # and a fully-connected hidden layer in front of the output layer.
 
@@ -116,14 +116,12 @@ def build_cnn(input_var=None, get_fp=False):
             W=lasagne.init.Normal(std=0.001))  # This controls the initial softmax distr
 
     net['reshape1'] = ReshapeLayer(net['conv3'],shape=(-1,1,109,109))
-    net['sfx'] = SoftmaxLayer(net['reshape1'],algo='accurate')
+    net['sfx'] = SoftmaxLayer(net['reshape1'],algo='accurate', temp=sfx_temp)
     net['reshape2'] = ReshapeLayer(net['sfx'], shape=(-1,109*109))
 
     net['fp'] = DenseLayer(net['reshape2'],num_units=2,
             W=lasagne.init.Expectation(width=109,height=109),
             b=lasagne.init.Constant(val=0.0),nonlinearity=lasagne.nonlinearities.linear)
-    if get_fp:
-        return net['fp']
     net['reshape3'] = ReshapeLayer(net['fp'],shape=(-1,32*2))
     net['recon'] = DenseLayer(net['reshape3'],num_units=3600,nonlinearity=lasagne.nonlinearities.linear,
             W=lasagne.init.Normal(),b=lasagne.init.Constant(val=0.0))
@@ -142,8 +140,10 @@ def build_cnn(input_var=None, get_fp=False):
     #       net['recon']: 0.005, net['fc_images']: 0.0}
     #lrs = {net['conv1/7x7_s2']: 0.0, net['conv2']: 0.0, net['conv3']: 0.0,
     #       net['fc1_smaller']: 0.0, net['fc_images']: 0.0}
-
-    return net['recon']
+    if get_fp:
+        return net['recon'], net['fp']
+    else:
+        return net['recon']
 
 
 # ############################# Batch iterator ###############################
@@ -167,13 +167,14 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt], targets[excerpt]
 
-def test_network(weights_file='trained_spatial_model.npz' ,get_fp=False):
+def test_network(weights_file='trained_spatial_model.npz', get_fp=False, get_sharp_fp=False):
+    print("Loading data...")
     X_train, y_train, X_val, y_val = load_dataset()
     input_var = T.tensor4('inputs')
     target_var = T.fmatrix('targets')
 
     print("Building model and compiling functions...")
-    network = build_cnn(input_var)
+    network, network_fp = build_cnn(input_var, get_fp=True)
 
     # And load them again later on like this:
     with np.load(weights_file) as f:
@@ -186,14 +187,24 @@ def test_network(weights_file='trained_spatial_model.npz' ,get_fp=False):
         return reconstruction, y_val
 
     # Retrieve feature points
-    network = build_cnn(input_var, get_fp=True)
+    # TODO - this might not be necessary
     with np.load(weights_file) as f:
         # Exclude last to params this time (reconstruction weights and biases)
         param_values = [f['arr_%d' % i] for i in range(len(f.files)-2)]
-    lasagne.layers.set_all_param_values(network, param_values)
-    fp = np.array(lasagne.layers.get_output(network, floatX(X_val)).eval())
+    lasagne.layers.set_all_param_values(network_fp, param_values)
+    fp = np.array(lasagne.layers.get_output(network_fp, floatX(X_val)).eval())
 
-    return reconstruction, y_val, fp, X_val
+    if not get_sharp_fp:
+        return reconstruction, y_val, fp, X_val
+
+    _, network_fp_sharp = build_cnn(input_var, get_fp=True, sfx_temp=0.001)
+    with np.load(weights_file) as f:
+        # Exclude last to params this time (reconstruction weights and biases)
+        param_values = [f['arr_%d' % i] for i in range(len(f.files)-2)]
+    lasagne.layers.set_all_param_values(network_fp_sharp, param_values)
+    fp_sharp = np.array(lasagne.layers.get_output(network_fp_sharp, floatX(X_val)).eval())
+
+    return reconstruction, y_val, fp, X_val, fp_sharp
 
 # ############################## Main program ################################
 # Everything else will be handled in our main program now. We could pull out

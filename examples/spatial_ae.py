@@ -167,7 +167,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt], targets[excerpt]
 
-def test_network(get_fp=False):
+def test_network(weights_file='trained_spatial_model.npz' ,get_fp=False):
     X_train, y_train, X_val, y_val = load_dataset()
     input_var = T.tensor4('inputs')
     target_var = T.fmatrix('targets')
@@ -176,7 +176,7 @@ def test_network(get_fp=False):
     network = build_cnn(input_var)
 
     # And load them again later on like this:
-    with np.load('trained_spatial_model.npz') as f:
+    with np.load(weights_file) as f:
         param_values = [f['arr_%d' % i] for i in range(len(f.files))]
     lasagne.layers.set_all_param_values(network, param_values)
 
@@ -187,7 +187,7 @@ def test_network(get_fp=False):
 
     # Retrieve feature points
     network = build_cnn(input_var, get_fp=True)
-    with np.load('trained_spatial_model.npz') as f:
+    with np.load(weights_file) as f:
         # Exclude last to params this time (reconstruction weights and biases)
         param_values = [f['arr_%d' % i] for i in range(len(f.files)-2)]
     lasagne.layers.set_all_param_values(network, param_values)

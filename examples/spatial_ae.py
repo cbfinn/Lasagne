@@ -42,33 +42,23 @@ def load_dataset():
     def load_images(filename, mean_img = None):
         data = np.float32(np.load(filename))
 
-        if mean_img is None:
-            mean_img = data.mean(axis=0)
-
-        data_submean = data-mean_img # Subtract mean
-
         tgt_imgs = np.float32(np.zeros((data.shape[0],3600)))
         for i in range(data.shape[0]):
-          img = color.rgb2gray(scipy.misc.imresize(np.transpose(data_submean[i], (2,1,0)), 0.25))
+          # NOTE: rgb2gray converts to an image in the range 0-1, so no need to scale later.
+          img = color.rgb2gray(scipy.misc.imresize(np.transpose(data[i], (2,1,0)), 0.25))
           tgt_imgs[i,:] = np.reshape(img.T,(3600,))
 
-        # The inputs come as bytes, we convert them to float32 in range [0,1].
-        # (Actually to range [0, 255/256], for compatibility to the version
-        # provided at http://deeplearning.net/data/mnist/mnist.pkl.gz.)
-        #return data / np.float32(256), tgt_imgs / np.float32(256)
-        return data, tgt_imgs / np.float32(256), mean_img
-        #return data / np.float32(256)
+        # For subtracting the mean of the training images
+        if mean_img is None:
+            mean_img = tgt_imgs.mean(axis=0)
+        tgt_imgs -= mean_img
 
-    def load_labels(filename):
-        data = np.float32(np.load(filename))
-        # The labels are vectors of floats now, that's exactly what we want.
-        return data
+        # NOTE: we leave data unscaled because of the conv1 weights.
+        return data, tgt_imgs, mean_img
 
     # We can now download and read the training and test set images and labels.
     X_train, y_train, mean_img = load_images('/home/cfinn/data/train_legopush2.npy')
-    #y_train = load_labels('/home/cfinn/data/labels_test.npy')
     X_val, y_val, _ = load_images('/home/cfinn/data/val_legopush2.npy', mean_img)
-    #y_val = load_labels('/home/cfinn/data/labels_test_v.npy')
 
     # We reserve the last 100 training examples for validation.
     #X_train, X_val = X_train[:-100], X_train[-100:]
@@ -110,8 +100,9 @@ def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
             num_filters=32,filter_size=5,
             nonlinearity=lasagne.nonlinearities.rectify,
             W=lasagne.init.Normal(std=0.001))
+    n_fp = 32
     net['conv3'] = ConvLayer(net['conv2'],
-            num_filters=32,filter_size=5,
+            num_filters=n_fp,filter_size=5,
             nonlinearity=lasagne.nonlinearities.rectify,
             W=lasagne.init.Normal(std=0.001))  # This controls the initial softmax distr
 
@@ -122,7 +113,7 @@ def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
     net['fp'] = DenseLayer(net['reshape2'],num_units=2,
             W=lasagne.init.Expectation(width=109,height=109),
             b=lasagne.init.Constant(val=0.0),nonlinearity=lasagne.nonlinearities.linear)
-    net['reshape3'] = ReshapeLayer(net['fp'],shape=(-1,32*2))
+    net['reshape3'] = ReshapeLayer(net['fp'],shape=(-1,n_fp*2))
     net['recon'] = DenseLayer(net['reshape3'],num_units=3600,nonlinearity=lasagne.nonlinearities.linear,
             W=lasagne.init.Normal(),b=lasagne.init.Constant(val=0.0))
 
@@ -261,9 +252,9 @@ def main(num_epochs=78):
     # Finally, launch the training loop.
     print("Starting training...")
     for epoch in range(num_epochs):
-        if epoch == 5:
-            lr.set_value(lr.get_value()*lr_decay)
-            print('dropping learning rate')
+        #if epoch == 5:  # Used for 32 fp
+            #lr.set_value(lr.get_value()*lr_decay)
+            #print('dropping learning rate')
 
         # In each epoch, we do a full pass over the training data:
         train_err = 0
@@ -305,7 +296,8 @@ def main(num_epochs=78):
     #import ipdb; ipdb.set_trace()
 
     # Optionally, you could now dump the network weights to a file like this:
-    np.savez('trained_spatial_model.npz', *lasagne.layers.get_all_param_values(network))
+    filename = 'trained_spatialae_32fp_' + str(val_err) + '.npz'
+    np.savez(filename, *lasagne.layers.get_all_param_values(network))
     #
     # And load them again later on like this:
     # with np.load('model.npz') as f:

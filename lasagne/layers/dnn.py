@@ -340,7 +340,10 @@ class SoftmaxDNNLayer(DNNLayer):
         Any additional keyword arguments are passed to the `Layer` superclass.
 
     """
-    def __init__(self, incoming, algo='accurate', **kwargs):
+    def __init__(self, incoming, algo='accurate', temp=1.0, **kwargs):
+        self.temp = temp
+        if 'temp' in kwargs:
+            del kwargs['temp']
         super(SoftmaxDNNLayer, self).__init__(incoming, **kwargs)
         self.softmax_op = dnn.GpuDnnSoftmax(tensor_format='bc01',mode='instance',algo=algo)
 
@@ -348,5 +351,5 @@ class SoftmaxDNNLayer(DNNLayer):
         return input_shape
 
     def get_output_for(self, input, **kwargs):
-        contiguous_input = gpu_contiguous(input)
+        contiguous_input = gpu_contiguous(input/self.temp)
         return self.softmax_op(contiguous_input)

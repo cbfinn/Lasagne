@@ -291,15 +291,17 @@ class Expectation(Initializer):
 
     Parameters
     ----------
-    type : string ('xy' only suppported right now)
-        The type of expectation to perform, xy is an expectation over x and y coordinates
+    option : string ('xy' or 'x^2y^2' suppported right now)
+        The type of expectation to perform
+            - xy is an expectation over x and y coordinates
+            - x^2y^2 is an expectation over x^2 and y^2 coordinate values
     width : int
         The width of the incoming image
     height : int
         The height of the incoming image
     """
-    def __init__(self, type='xy', height=107, width=107):
-        self.type = type
+    def __init__(self, option='xy', height=107, width=107):
+        self.option = option
         self.width = width
         self.height = height
 
@@ -322,11 +324,17 @@ class Expectation(Initializer):
             for y in range(self.height):
                 for k in range(n_outputs):
                     if k == 0:  # output x coordiante
-                        w[y*self.width+x,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
+                        if self.option == 'xy':
+                            w[y*self.width+x,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
+                        else: # self.option = 'x^2y^2':
+                            w[y*self.width+x,k] = (2*(np.float32(x)/(self.width-1) - 0.5))**2
                         #w[y+x*self.height,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
                     else:  # output y coordinate
                         #w[y+x*self.height,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
-                        w[y*self.width+x,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
+                        if self.option == 'xy':
+                            w[y*self.width+x,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
+                        else: # self.option = 'x^2y^2':
+                            w[y*self.width+x,k] = (2*(np.float32(y)/(self.height-1) - 0.5))**2
 
         return w
 

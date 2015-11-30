@@ -74,7 +74,7 @@ def load_dataset():
 # function that takes a Theano variable representing the input and returns
 # the output layer of a neural network model built in Lasagne.
 
-def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
+def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0, n_fp=32, with_var=False):
     # As a third model, we'll create a CNN of three convolution + pooling stages
     # and a fully-connected hidden layer in front of the output layer.
 
@@ -100,7 +100,6 @@ def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
             num_filters=32,filter_size=5,
             nonlinearity=lasagne.nonlinearities.rectify,
             W=lasagne.init.Normal(std=0.001))
-    n_fp = 32
     net['conv3'] = ConvLayer(net['conv2'],
             num_filters=n_fp,filter_size=5,
             nonlinearity=lasagne.nonlinearities.rectify,
@@ -114,7 +113,20 @@ def build_cnn(input_var=None, get_fp=False, sfx_temp=1.0):
             W=lasagne.init.Expectation(width=109,height=109),
             b=lasagne.init.Constant(val=0.0),nonlinearity=lasagne.nonlinearities.linear)
     net['reshape3'] = ReshapeLayer(net['fp'],shape=(-1,n_fp*2))
-    net['recon'] = DenseLayer(net['reshape3'],num_units=3600,nonlinearity=lasagne.nonlinearities.linear,
+
+    if with_var:
+        net['fp.^2'] = nn.layers.ElemwiseMergeLayer([net['reshape3'],net['reshape3']],
+                merge_function=T.mul)
+        net['fp^2'] = nn.layers.DenseLayer(net['reshape2'],num_units=2,
+                W=nn.init.Expectation(width=109,height=109,option='x^2y^2'),
+                b=nn.init.Constant(val=0.0),nonlinearity=nn.nonlinearities.linear)
+        net['reshape4'] = nn.layers.ReshapeLayer(net['fp^2'],shape=(-1,z_dim))
+        net['fp_var'] = nn.layers.ElemwiseSumLayer([net['fp.^2'],net['reshape4']], coeffs=[-1,1])
+        net['encoding'] = nn.layers.ConcatLayer([net['fp'], net['fp_var']], axis=1)
+    else:
+        net['encoding'] = net['reshape3']
+
+    net['recon'] = DenseLayer(net['encoding'],num_units=3600,nonlinearity=lasagne.nonlinearities.linear,
             W=lasagne.init.Normal(),b=lasagne.init.Constant(val=0.0))
 
     for key in net['fp'].params.keys():
@@ -167,7 +179,6 @@ def test_network(weights_file='trained_spatial_model.npz', get_fp=False, get_sha
     print("Building model and compiling functions...")
     network, network_fp = build_cnn(input_var, get_fp=True)
 
-    # And load them again later on like this:
     with np.load(weights_file) as f:
         param_values = [f['arr_%d' % i] for i in range(len(f.files))]
     lasagne.layers.set_all_param_values(network, param_values)

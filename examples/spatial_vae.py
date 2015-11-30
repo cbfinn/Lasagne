@@ -15,6 +15,8 @@ from lasagne.utils import floatX
 from skimage import color
 import scipy.misc
 
+import h5py
+
 # ############################################################################
 # Implementation of variational autoencoder (AEVB) algorithm as in:
 # [1] arXiv:1312.6114 [stat.ML] (Diederik P Kingma, Max Welling 2013)
@@ -29,6 +31,23 @@ import scipy.misc
 # can be found here: https://youtu.be/pgmnCU_DxzM
 
 def load_dataset():
+    def load_h5_images(filename, mean_img = None):
+        f = h5py.File(filename, 'r')
+        data = np.array(f['rgb_frames+0'],dtype=np.float32)
+
+        tgt_imgs = np.float32(np.zeros((data.shape[0],3600)))
+        for i in range(data.shape[0]):
+          # NOTE: rgb2gray converts to an image in the range 0-1, so no need to scale later.
+          img = color.rgb2gray(scipy.misc.imresize(np.transpose(data[i], (2,1,0)), 0.25))
+          tgt_imgs[i,:] = np.reshape(img.T,(3600,))
+
+        # For subtracting the mean of the training images
+        if mean_img is None:
+            mean_img = tgt_imgs.mean(axis=0)
+        tgt_imgs -= mean_img
+        # NOTE: we leave data unscaled because of the conv1 weights.
+        return data, tgt_imgs, mean_img
+
     def load_images(filename, mean_img = None):
         data = np.float32(np.load(filename))
 
@@ -43,24 +62,15 @@ def load_dataset():
             mean_img = tgt_imgs.mean(axis=0)
         tgt_imgs -= mean_img
 
-        # The inputs come as bytes, we convert them to float32 in range [0,1].
-        # (Actually to range [0, 255/256], for compatibility to the version
-        # provided at http://deeplearning.net/data/mnist/mnist.pkl.gz.)
-        #return data / np.float32(256), tgt_imgs / np.float32(256)
-
         # NOTE: we leave data unscaled because of the conv1 weights.
         return data, tgt_imgs, mean_img
         #return data / np.float32(256)
 
     # We can now download and read the training and test set images and labels.
-    X_train, y_train, mean_img = load_images('/home/cfinn/data/train_legopush2.npy')
-    #y_train = load_labels('/home/cfinn/data/labels_test.npy')
-    X_val, y_val, _ = load_images('/home/cfinn/data/val_legopush2.npy', mean_img)
-    #y_val = load_labels('/home/cfinn/data/labels_test_v.npy')
-
-    # We reserve the last 100 training examples for validation.
-    #X_train, X_val = X_train[:-100], X_train[-100:]
-    #y_train, y_val = y_train[:-100], y_train[-100:]
+    #X_train, y_train, mean_img = load_images('/home/cfinn/data/train_legopush2.npy')
+    #X_val, y_val, _ = load_images('/home/cfinn/data/val_legopush2.npy', mean_img)
+    X_train, y_train, mean_img = load_h5_images('/media/drive2tb/fpcontroldata/train_ricebowl_09-08.h5')
+    X_val, y_val, _ = load_h5_images('/media/drive2tb/fpcontroldata/val_ricebowl_09-08.h5', mean_img)
 
     # We just return all the arrays in order, as expected in main().
     # (It doesn't matter how we do this as long as we can read them again.)
@@ -146,6 +156,7 @@ class GaussianSigSampleLayer(nn.layers.MergeLayer):
 # Then L separate outputs are constructed and the final layer averages them
 
 def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
+    n_fp = z_dim/2
 
     net = {}
     net['input'] = nn.layers.InputLayer(shape=(None, 3, 240, 240),
@@ -167,7 +178,7 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
             nonlinearity=nn.nonlinearities.rectify,
             W=nn.init.Normal(std=0.001))
     net['conv3'] = Conv2DDNNLayer(net['conv2'],
-            num_filters=z_dim/2,filter_size=5,
+            num_filters=n_fp,filter_size=5,
             nonlinearity=nn.nonlinearities.rectify,
             W=nn.init.Normal(std=0.001))  # This controls the initial softmax distr
 
@@ -190,7 +201,13 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
             b=nn.init.Constant(val=0.0),nonlinearity=nn.nonlinearities.linear)
     net['reshape4'] = nn.layers.ReshapeLayer(net['fp^2'],shape=(-1,z_dim))
     net['fp_var'] = nn.layers.ElemwiseSumLayer([net['fp.^2'],net['reshape4']], coeffs=[-1,1])
-    l_enc_sigma = net['fp_var']
+    #l_enc_sigma = net['fp_var']
+    l_enc_sigma = nn.layers.NonlinearityLayer(net['fp_var'])
+    relu_shift = -0.000001
+    l_enc_sigma = nn.layers.ExpressionLayer(l_enc_sigma, function=lambda a: a-relu_shift)
+    # Clip variance to be at least 0.000001
+    #l_enc_sigma = nn.layers.NonlinearityLayer(net['fp_var'],
+    #    nonlinearity = lambda a: T.nnet.relu(a+relu_shift)-relu_shift)
 
     for key in net['fp^2'].params.keys():
         net['fp^2'].params[key].remove('trainable')
@@ -233,11 +250,20 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
         # will cause the loss function to become NAN. So we set the limit
         # stdev >= exp(-1 * relu_shift)
         relu_shift = 10
-        l_dec_logsigma = nn.layers.DenseLayer(l_Z, num_units=targetvar_shape,
+        l_dec_logsigma_coef = nn.layers.DenseLayer(l_Z, num_units=1,
                 W = nn.init.Normal() if W_dec_ls is None else W_dec_ls,
                 b = nn.init.Constant(0) if b_dec_ls is None else b_dec_ls,
                 nonlinearity = lambda a: T.nnet.relu(a+relu_shift)-relu_shift,
                 name='dec_logsigma')
+
+        # Constant variance for the entire image
+        l_dec_logsigma = nn.layers.DenseLayer(l_dec_logsigma_coef, num_units=targetvar_shape,
+                W = nn.init.Constant(1), b = nn.init.Constant(0), nonlinearity=None, name='dec_output_ls')
+        for key in l_dec_logsigma.params.keys():
+            l_dec_logsigma.params[key].remove('trainable')
+            if 'regularizable' in l_dec_logsigma.params[key]:
+                l_dec_logsigma.params[key].remove('regularizable')
+
         l_output = GaussianSampleLayer(l_dec_mu, l_dec_logsigma,
                 name='dec_output')
         l_dec_mu_list.append(l_dec_mu)
@@ -248,8 +274,8 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
             #b_dec_hid = l_dec_hid.b
             W_dec_mu = l_dec_mu.W
             b_dec_mu = l_dec_mu.b
-            W_dec_ls = l_dec_logsigma.W
-            b_dec_ls = l_dec_logsigma.b
+            W_dec_ls = l_dec_logsigma_coef.W
+            b_dec_ls = l_dec_logsigma_coef.b
     # Why is this here? (elementwise mean over all samples...)
     l_output = nn.layers.ElemwiseSumLayer(l_output_list, coeffs=1./L, name='output')
     return l_enc_mu, l_enc_sigma, l_dec_mu_list, l_dec_logsigma_list, l_output_list, l_output
@@ -260,7 +286,8 @@ def log_likelihood(tgt, mu, ls):
     return T.sum(-(np.float32(0.5 * np.log(2 * np.pi)) + ls)
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
-def main(L=2, z_dim=32, num_epochs=300):
+# If resume is true, it wlil look in output_dir for the learning curve data and weights.
+def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights_file=None):
     print("Loading data...")
     X_train, y_train, X_val, y_val = load_dataset()
     #X_train, X_val = load_dataset()
@@ -277,6 +304,25 @@ def main(L=2, z_dim=32, num_epochs=300):
     l_z_mu, l_z_s, l_x_mu_list, l_x_ls_list, l_x_list, l_x = \
            build_vae(input_var, L=L, z_dim=z_dim)
 
+    if resume:
+        # Find weights file and init network
+        import glob
+        weights_file = max(glob.iglob(output_dir + 'params_*.npz'), key=os.path.getctime)
+        # Need to get string file path to weights file
+        f = np.load(output_dir+'learning_curve.npz')
+        train_curve = f['train_loss'].tolist()
+        val_curve = f['val_loss'].tolist()
+        val_l2_curve = f['val_l2_loss'].tolist()
+    else:
+        train_curve = []
+        val_curve = []
+        val_l2_curve = []
+
+    if weights_file:
+        with np.load(weights_file) as f:
+            param_values =  [f['arr_%d' % i] for i in range(len(f.files))]
+        nn.layers.set_all_param_values(l_x, param_values)
+
     def build_loss(deterministic):
         layer_outputs = nn.layers.get_output([l_z_mu, l_z_s] + l_x_mu_list + l_x_ls_list
                 + l_x_list + [l_x], deterministic=deterministic)
@@ -287,14 +333,22 @@ def main(L=2, z_dim=32, num_epochs=300):
         x_list =  layer_outputs[2+2*L:2+3*L]
         x = layer_outputs[-1]
         # Loss expression has two parts as specified in [1]
-        # kl_div = KL divergence between p_theta(z) and p(z|x)
+        # kl_div = negative KL divergence between p_theta(z) and p(z|x)
         # - divergence between prior distr and approx posterior of z given x
         # - or how likely we are to see this z when accounting for Gaussian prior
         # logpxz = log p(x|z)
         # - log-likelihood of x given z
         # - in continuous case, is log-likelihood of seeing the target x under the
         #   Gaussian distribution parameterized by dec_mu, sigma = exp(dec_logsigma)
-        kl_div = 0.5 * T.sum(1 + T.log(z_s+0.000001) - T.sqr(z_mu) - z_s)
+
+        prior_var = 0.1 # Variance of the prior
+        min_var = 0 #0.000001 # so we never have 0 variance
+        # Standard prior
+        #kl_div = 0.5 * T.sum(1 + T.log((z_s+min_var)/prior_var) - T.sqr(z_mu)/prior_var - z_s/prior_var)
+        # Prior with no mean, just variance (not sure if this makes sense)
+        #kl_div = 0.5 * T.sum(1 + T.log((z_s+min_var)/prior_var) - z_s/prior_var)
+        # Uniform prior
+        kl_div = 0.5*T.sum(1+T.log(2*np.pi*(z_s)+min_var))
         # Use downsampled target_var instead of input_var
         logpxz = sum(log_likelihood(target_var, mu, ls)
             for mu, ls in zip(x_mu, x_ls))/L
@@ -302,12 +356,12 @@ def main(L=2, z_dim=32, num_epochs=300):
         #    for mu, ls in zip(x_mu, x_ls))/L
         prediction = x_mu[0] if deterministic else T.sum(x_mu, axis=0)/L
         loss = -1 * (logpxz + kl_div)
-        return loss, prediction
+        return loss, prediction, z_s.min()
 
     # If there are dropout layers etc these functions return masked or non-masked expressions
     # depending on if they will be used for training or validation/test err calcs
-    loss, _ = build_loss(deterministic=False)
-    test_loss, test_prediction = build_loss(deterministic=True)
+    loss, _, z_min = build_loss(deterministic=False)
+    test_loss, test_prediction, _ = build_loss(deterministic=True)
 
     # ADAM updates
     params = nn.layers.get_all_params(l_x, trainable=True)
@@ -315,18 +369,20 @@ def main(L=2, z_dim=32, num_epochs=300):
     # Use target_var in loss, not just input_var
     #train_fn = theano.function([input_var], loss, updates=updates)
     #val_fn = theano.function([input_var], test_loss)
-    train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    train_fn = theano.function([input_var, target_var], [loss, z_min], updates=updates)
     val_fn = theano.function([input_var, target_var], [test_loss, test_prediction])
 
     print("Starting training...")
     batch_size = 25
+
     for epoch in range(num_epochs):
         train_err = 0
         train_batches = 0
         start_time = time.time()
         for batch in iterate_minibatches(X_train, y_train, batch_size, shuffle=True):
             inputs, targets = batch
-            this_err = train_fn(inputs, targets)
+            this_err, z_min = train_fn(inputs, targets)
+            print z_min
             #print this_err
             train_err += this_err
             train_batches += 1
@@ -342,6 +398,9 @@ def main(L=2, z_dim=32, num_epochs=300):
             val_batches += 1
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
+        train_curve.append(train_err/train_batches)
+        val_curve.append(val_err/val_batches)
+        val_l2_curve.append(l2_err/val_batches)
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
         print("  validation l2 loss:\t\t{:.6f}".format(l2_err / val_batches))
@@ -355,6 +414,26 @@ def main(L=2, z_dim=32, num_epochs=300):
     #test_err /= test_batches
     #print("Final results:")
     #print("  test loss:\t\t\t{:.6f}".format(test_err))
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Plot learning curves
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    plt.plot(train_curve, color='seagreen')
+    plt.hold(True)
+    plt.plot(val_curve,color='dodgerblue')
+    plt.legend(['training loss', 'validation loss'])
+    plt.xlabel('epochs',fontsize=14); plt.ylabel('-log likelihood',fontsize=14)
+    plt.savefig(output_dir+'learning_curve')
+    plt.hold(False)
+    plt.plot(val_l2_curve, color='mediumaquamarine')
+    plt.xlabel('epochs',fontsize=14); plt.ylabel('val l2 reconstruction error',fontsize=14)
+    plt.savefig(output_dir+'val_l2_curve')
+    # Save learning curve data
+    np.savez(output_dir+'learning_curve.npz', train_loss=train_curve,
+             val_loss=val_curve, val_l2_loss=val_l2_curve)
 
     # save some example pictures so we can see what it's done
     example_batch_size = 20
@@ -364,12 +443,12 @@ def main(L=2, z_dim=32, num_epochs=300):
     pred_fn = theano.function([input_var], test_prediction)
     X_pred = pred_fn(X_comp).reshape(-1, 1, width, height)
     for i in range(20):
-        get_image_pair(y_comp, X_pred, idx=i, channels=1).save('output_{}.jpg'.format(i))
+        get_image_pair(y_comp, X_pred, idx=i, channels=1).save(output_dir+'output_{}.jpg'.format(i))
 
     # save the parameters so they can be loaded for next time
     print("Saving")
-    fn = 'params_{:.6f}'.format(val_err)
-    np.savez(fn + '.npz', *nn.layers.get_all_param_values(l_x))
+    fn = 'params_{:.6f}'.format(val_err/val_batches)
+    np.savez(output_dir+fn + '.npz', *nn.layers.get_all_param_values(l_x))
 
     # sample from latent space if it's 2d
     if z_dim == 2:
@@ -422,5 +501,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_epochs', type=int, dest='num_epochs')
     parser.add_argument('--L', type=int, dest='L')
     parser.add_argument('--z_dim', type=int, dest='z_dim')
+    parser.add_argument('--dir', dest='output_dir') # Note, this must include the trailing slash
+    parser.add_argument('--resume', action='store_true') # False by default
     args = parser.parse_args(sys.argv[1:])
     main(**{k:v for (k,v) in vars(args).items() if v is not None})

@@ -33,12 +33,15 @@ import h5py
 def load_dataset():
     def load_h5_images(filename, mean_img = None):
         f = h5py.File(filename, 'r')
-        data = np.array(f['rgb_frames+0'],dtype=np.float32)
+        rgb0 = np.array(f['rgb_frames-1'],dtype=np.float32)
+        rgb1 = np.array(f['rgb_frames+0'],dtype=np.float32)
+        rgb2 = np.array(f['rgb_frames+1'],dtype=np.float32)
 
-        tgt_imgs = np.float32(np.zeros((data.shape[0],3600)))
-        for i in range(data.shape[0]):
+        # Only use rgb2
+        tgt_imgs = np.float32(np.zeros((rgb2.shape[0],3600)))
+        for i in range(rgb2.shape[0]):
           # NOTE: rgb2gray converts to an image in the range 0-1, so no need to scale later.
-          img = color.rgb2gray(scipy.misc.imresize(np.transpose(data[i], (2,1,0)), 0.25))
+          img = color.rgb2gray(scipy.misc.imresize(np.transpose(rgb2[i], (2,1,0)), 0.25))
           tgt_imgs[i,:] = np.reshape(img.T,(3600,))
 
         # For subtracting the mean of the training images
@@ -46,7 +49,7 @@ def load_dataset():
             mean_img = tgt_imgs.mean(axis=0)
         tgt_imgs -= mean_img
         # NOTE: we leave data unscaled because of the conv1 weights.
-        return data, tgt_imgs, mean_img
+        return rgb0,rgb1,rgb2, tgt_imgs, mean_img
 
     def load_images(filename, mean_img = None):
         data = np.float32(np.load(filename))
@@ -69,12 +72,12 @@ def load_dataset():
     # We can now download and read the training and test set images and labels.
     #X_train, y_train, mean_img = load_images('/home/cfinn/data/train_legopush2.npy')
     #X_val, y_val, _ = load_images('/home/cfinn/data/val_legopush2.npy', mean_img)
-    X_train, y_train, mean_img = load_h5_images('/media/drive2tb/fpcontroldata/train_ricebowl_09-08.h5')
-    X_val, y_val, _ = load_h5_images('/media/drive2tb/fpcontroldata/val_ricebowl_09-08.h5', mean_img)
+    rgb0_train, rgb1_train, rgb2_train, y_train, mean_img = load_h5_images('/media/drive2tb/fpcontroldata/train_ricebowl_09-08.h5')
+    rgb0_val, rgb1_val, rgb2_val, y_val, _ = load_h5_images('/media/drive2tb/fpcontroldata/val_ricebowl_09-08.h5', mean_img)
 
     # We just return all the arrays in order, as expected in main().
     # (It doesn't matter how we do this as long as we can read them again.)
-    return X_train, y_train, X_val, y_val #, y_train, X_val, y_val #, X_test, y_test
+    return rgb0_train, rgb1_train, rgb2_train, y_train, rgb0_val, rgb1_val, rgb2_val, y_val #, y_train, X_val, y_val #, X_test, y_test
 
 # ############################# Output images ################################
 # image processing using PIL
@@ -99,17 +102,17 @@ def get_image_pair(X, Xpr, channels=1, idx=-1):
 
 # ############################# Batch iterator ###############################
 
-def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
-    assert len(inputs) == len(targets)
+def iterate_minibatches(in0, in1, in2, targets, batchsize, shuffle=False):
+    assert len(in0) == len(targets)
     if shuffle:
-        indices = np.arange(len(inputs))
+        indices = np.arange(len(targets))
         np.random.shuffle(indices)
-    for start_idx in range(0, len(inputs) - batchsize + 1, batchsize):
+    for start_idx in range(0, len(targets) - batchsize + 1, batchsize):
         if shuffle:
             excerpt = indices[start_idx:start_idx + batchsize]
         else:
             excerpt = slice(start_idx, start_idx + batchsize)
-        yield inputs[excerpt], targets[excerpt]
+        yield np.concatenate((in0[excerpt],in1[excerpt],in2[excerpt]), axis=0), targets[excerpt]
 
 
 # ##################### Custom layer for middle of VCAE ######################
@@ -155,7 +158,7 @@ class GaussianSigSampleLayer(nn.layers.MergeLayer):
 # once we have (mu, sigma) for Z, we sample L times
 # Then L separate outputs are constructed and the final layer averages them
 
-def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
+def build_vae(input_var,batch_size=25, L=2, targetvar_shape=3600, channels=1, z_dim=32):
     n_fp = z_dim/2
 
     net = {}
@@ -181,28 +184,31 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
             num_filters=n_fp,filter_size=5,
             nonlinearity=nn.nonlinearities.rectify,
             W=nn.init.Normal(std=0.001))  # This controls the initial softmax distr
+    #conv3_2 = nn.
 
     net['reshape1'] = nn.layers.ReshapeLayer(net['conv3'],shape=(-1,1,109,109))
     net['sfx'] = SoftmaxDNNLayer(net['reshape1'],algo='accurate', temp=1.0)
     net['reshape2'] = nn.layers.ReshapeLayer(net['sfx'], shape=(-1,109*109))
 
+    # Get mean
     net['fp'] = nn.layers.DenseLayer(net['reshape2'],num_units=2,
             W=nn.init.Expectation(width=109,height=109,option='xy'),
             b=nn.init.Constant(val=0.0),nonlinearity=nn.nonlinearities.linear)
     net['reshape3'] = nn.layers.ReshapeLayer(net['fp'],shape=(-1,z_dim))
-    l_enc_mu = net['reshape3']
+    fp0 = nn.layers.SliceLayer(net['reshape3'], indices=slice(0,batch_size), axis=0)
+    fp1 = nn.layers.SliceLayer(net['reshape3'], indices=slice(batch_size,2*batch_size), axis=0)
+    fp_prior = nn.layers.ElemwiseSumLayer([fp0,fp1], coeffs=[1,2])
+    l_enc_mu = nn.layers.SliceLayer(net['reshape3'], indices=slice(2*batch_size,3*batch_size), axis=0)
 
     # Construct variance
-    net['fp.^2'] = nn.layers.ElemwiseMergeLayer([net['reshape3'],net['reshape3']],
+    net['fp.^2'] = nn.layers.ElemwiseMergeLayer([l_enc_mu,l_enc_mu],
             merge_function=T.mul)
-    net['fp^2'] = nn.layers.DenseLayer(net['reshape2'],num_units=2,
+    sfx2 = nn.layers.SliceLayer(net['reshape2'], indices=slice(2*batch_size*n_fp,None),axis=0)
+    net['fp^2'] = nn.layers.DenseLayer(sfx2,num_units=2,
             W=nn.init.Expectation(width=109,height=109,option='x^2y^2'),
             b=nn.init.Constant(val=0.0),nonlinearity=nn.nonlinearities.linear)
     net['reshape4'] = nn.layers.ReshapeLayer(net['fp^2'],shape=(-1,z_dim))
     net['fp_var'] = nn.layers.ElemwiseSumLayer([net['fp.^2'],net['reshape4']], coeffs=[-1,1])
-    #l_enc_sigma = nn.layers.ExpressionLayer(net['fp_var'], function=lambda a: a-relu_shift)
-    #l_enc_sigma = nn.layers.NonlinearityLayer(l_enc_sigma)
-    #l_enc_sigma = nn.layers.ExpressionLayer(l_enc_sigma, function=lambda a: a+relu_shift)
     # Clip variance to be at least 0.000001
     relu_shift = 0.000001
     l_enc_sigma = nn.layers.NonlinearityLayer(net['fp_var'],
@@ -233,7 +239,7 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
     b_dec_ls = None
     # Take L samples
     for i in xrange(L):
-        l_Z = GaussianSigSampleLayer(l_enc_mu, net['fp_var'], name='Z') #l_enc_sigma, name='Z')
+        l_Z = GaussianSigSampleLayer(l_enc_mu, net['fp_var'], name='Z')
         #l_dec_hid = nn.layers.DenseLayer(l_Z, num_units=n_hid,
                 #nonlinearity = T.nnet.softplus,
                 #W=nn.init.Normal() if W_dec_hid is None else W_dec_hid,
@@ -249,7 +255,7 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
         # will cause the loss function to become NAN. So we set the limit
         # stdev >= exp(-1 * relu_shift)
         relu_shift = 10
-        l_dec_logsigma_coef = nn.layers.DenseLayer(l_Z, num_units=1,
+        l_dec_logsigma_coef = nn.layers.DenseLayer(l_Z, num_units=1, #targetvar_shape,
                 W = nn.init.Normal() if W_dec_ls is None else W_dec_ls,
                 b = nn.init.Constant(0) if b_dec_ls is None else b_dec_ls,
                 nonlinearity = lambda a: T.nnet.relu(a+relu_shift)-relu_shift,
@@ -277,7 +283,7 @@ def build_vae(input_var, L=2, targetvar_shape=3600, channels=1, z_dim=32):
             b_dec_ls = l_dec_logsigma_coef.b
     # Why is this here? (elementwise mean over all samples...)
     l_output = nn.layers.ElemwiseSumLayer(l_output_list, coeffs=1./L, name='output')
-    return l_enc_mu, l_enc_sigma, l_dec_mu_list, l_dec_logsigma_list, l_output_list, l_output
+    return l_enc_mu, l_enc_sigma, l_dec_mu_list, l_dec_logsigma_list, l_output_list, l_output, fp_prior
 
 # ############################## Main program ################################
 
@@ -286,9 +292,9 @@ def log_likelihood(tgt, mu, ls):
             - 0.5 * T.sqr(tgt - mu) / T.exp(2 * ls))
 
 # If resume is true, it wlil look in output_dir for the learning curve data and weights.
-def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights_file=None):
+def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', weights_file='', resume=False):
     print("Loading data...")
-    X_train, y_train, X_val, y_val = load_dataset()
+    rgb0_train,rgb1_train, rgb2_train, y_train, rgb0_val,rgb1_val,rgb2_val, y_val = load_dataset()
     #X_train, X_val = load_dataset()
     #width, height = X_train.shape[2], X_train.shape[3]
     width = 60
@@ -300,7 +306,7 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
     print("Building model and compiling functions...")
     print("L = {}, z_dim = {}".format(L, z_dim))
     #x_dim = width * height
-    l_z_mu, l_z_s, l_x_mu_list, l_x_ls_list, l_x_list, l_x = \
+    l_z_mu, l_z_s, l_x_mu_list, l_x_ls_list, l_x_list, l_x, l_z_prior = \
            build_vae(input_var, L=L, z_dim=z_dim)
 
     if resume:
@@ -324,15 +330,17 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
 
     def build_loss(deterministic):
         layer_outputs = nn.layers.get_output([l_z_mu, l_z_s] + l_x_mu_list + l_x_ls_list
-                + l_x_list + [l_x], deterministic=deterministic)
+                + l_x_list + [l_x] + [l_z_prior], deterministic=deterministic)
         z_mu =  layer_outputs[0]
         z_s =  layer_outputs[1]
         x_mu =  layer_outputs[2:2+L]
         x_ls =  layer_outputs[2+L:2+2*L]
         x_list =  layer_outputs[2+2*L:2+3*L]
-        x = layer_outputs[-1]
+        x = layer_outputs[2+3*L]
+        z_prior = layer_outputs[3+3*L:]
+
         # Loss expression has two parts as specified in [1]
-        # kl_div = negative KL divergence between p_theta(z) and p(z|x)
+        # kl_div = KL divergence between p_theta(z) and p(z|x)
         # - divergence between prior distr and approx posterior of z given x
         # - or how likely we are to see this z when accounting for Gaussian prior
         # logpxz = log p(x|z)
@@ -341,13 +349,16 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
         #   Gaussian distribution parameterized by dec_mu, sigma = exp(dec_logsigma)
 
         prior_var = 0.1 # Variance of the prior
-        #min_var = 0 #0.000001 # so we never have 0 variance
-        # Standard prior
+
+        # Standard prior with variance prior_var
         #kl_div = 0.5 * T.sum(1 + T.log(z_s/prior_var) - T.sqr(z_mu)/prior_var - z_s/prior_var)
         # Prior with no mean, just variance (not sure if this makes sense)
         #kl_div = 0.5 * T.sum(1 + T.log(z_s/prior_var) - z_s/prior_var)
         # Uniform prior
-        kl_div = 0.5*T.sum(1+T.log(2*np.pi*z_s))
+        #kl_div = 0.5*T.sum(1+T.log(2*np.pi*z_s))
+        # Constant velocity prior
+        kl_div = 0.5 * T.sum(1 + T.log(z_s/prior_var) - T.sqr(z_mu-z_prior)/prior_var - z_s/prior_var)
+
         # Use downsampled target_var instead of input_var
         logpxz = sum(log_likelihood(target_var, mu, ls)
             for mu, ls in zip(x_mu, x_ls))/L
@@ -378,15 +389,16 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatches(X_train, y_train, batch_size, shuffle=True):
+        for batch in iterate_minibatches(rgb0_train,rgb1_train,rgb2_train, y_train, batch_size, shuffle=True):
             inputs, targets = batch
             this_err = train_fn(inputs, targets)
+            #print this_err
             train_err += this_err
             train_batches += 1
         val_err = 0
         val_batches = 0
         l2_err = 0
-        for batch in iterate_minibatches(X_val, y_val, batch_size, shuffle=False):
+        for batch in iterate_minibatches(rgb0_val, rgb1_val, rgb2_val, y_val, batch_size, shuffle=False):
             inputs, targets = batch
             [err, pred] = val_fn(inputs, targets)
             l2loss = ((pred-targets)**2).sum()/2.0/batch_size
@@ -433,14 +445,16 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
              val_loss=val_curve, val_l2_loss=val_l2_curve)
 
     # save some example pictures so we can see what it's done
-    example_batch_size = 20
-    X_comp = X_val[:example_batch_size]
-    y_comp = y_val[:example_batch_size]
-    y_comp = np.reshape(y_comp, (example_batch_size, 1, width, height))
-    pred_fn = theano.function([input_var], test_prediction)
-    X_pred = pred_fn(X_comp).reshape(-1, 1, width, height)
-    for i in range(20):
-        get_image_pair(y_comp, X_pred, idx=i, channels=1).save(output_dir+'output_{}.jpg'.format(i))
+    #example_batch_size = 20
+    #X_comp0 = rgb0_val[:example_batch_size]
+    #X_comp1 = rgb1_val[:example_batch_size]
+    #X_comp2 = rgb2_val[:example_batch_size]
+    #y_comp = y_val[:example_batch_size]
+    #y_comp = np.reshape(y_comp, (example_batch_size, 1, width, height))
+    #pred_fn = theano.function([input_var], test_prediction)
+    #X_pred = pred_fn(X_comp).reshape(-1, 1, width, height)
+    #for i in range(20):
+        #get_image_pair(y_comp, X_pred, idx=i, channels=1).save(output_dir+'output_{}.jpg'.format(i))
 
     # save the parameters so they can be loaded for next time
     print("Saving")
@@ -464,9 +478,12 @@ def main(L=2, z_dim=32, num_epochs=300, output_dir='vae/', resume=False, weights
             im.paste(Image.fromarray(get_image_array(x_gen,0)), (x*width,y*height))
             im.save('gen.jpg')
 
-def test_network(L=4, z_dim=32, weights_file='params_-1424936.734375_vae.npz', get_fp=False):
+def test_network(L=4, z_dim=32,output_dir='vae/', get_fp=False):
     print("Loading data...")
-    X_train, y_train, X_val, y_val = load_dataset()
+    rgb0_train,rgb1_train, rgb2_train, y_train, rgb0_val,rgb1_val,rgb2_val, y_val = load_dataset()
+
+    import glob
+    weights_file = max(glob.iglob(output_dir + 'params_*.npz'), key=os.path.getctime)
 
     input_var = T.tensor4('inputs')
     target_var = T.fmatrix('targets')
@@ -475,20 +492,29 @@ def test_network(L=4, z_dim=32, weights_file='params_-1424936.734375_vae.npz', g
     print("Building model and compiling functions...")
     print("L = {}, z_dim = {}".format(L, z_dim))
     #x_dim = width * height
-    l_z_mu, l_z_s, l_x_mu_list, l_x_ls_list, l_x_list, l_x = \
+    l_z_mu, l_z_s, l_x_mu_list, l_x_ls_list, l_x_list, l_x, l_z_prior = \
            build_vae(input_var, L=L, z_dim=z_dim)
 
     with np.load(weights_file) as f:
         param_values =  [f['arr_%d' % i] for i in range(len(f.files))]
     nn.layers.set_all_param_values(l_x, param_values)
 
-    reconstructions = np.array(nn.layers.get_output(l_x, floatX(X_val), deterministic=True).eval())
+    # Get entire validation set
+    X_vals = []
+    y_vals = []
+    reconstructions = []
+    fp = []
+    for batch in iterate_minibatches(rgb0_val,rgb1_val,rgb2_val, y_val, 25, shuffle=False):
+        X_val, y_val = batch
+        X_vals.append(X_val)
+        y_vals.append(y_val)
+        reconstructions.append(np.array(nn.layers.get_output(l_x, floatX(X_val), deterministic=True).eval()))
+        fp.append(np.array(nn.layers.get_output(l_z_mu, floatX(X_val)).eval()))
 
     if not get_fp:
-        return reconstructions, y_val
+        return reconstructions, y_vals
 
-    fp = np.array(nn.layers.get_output(l_z_mu, floatX(X_val)).eval())
-    return reconstructions, y_val, fp, X_val
+    return reconstructions, y_vals, fp, rgb2_val
 
 
 if __name__ == '__main__':

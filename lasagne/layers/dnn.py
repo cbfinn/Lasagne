@@ -317,7 +317,6 @@ class Conv2DDNNLayer(DNNLayer):
             activation = conved + self.b.dimshuffle('x', 0, 'x', 'x')
         return self.nonlinearity(activation)
 
-<<<<<<< HEAD
 class SoftmaxDNNLayer(DNNLayer):
     """
     lasagne.layers.SoftmaxDNNLayer(incoming, **kwargs)

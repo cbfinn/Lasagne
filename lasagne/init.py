@@ -296,8 +296,10 @@ class Expectation(Initializer):
 
     Parameters
     ----------
-    option : string ('xy' or 'x^2y^2' suppported right now)
+    option : string ('x', 'y', 'xy' or 'x^2y^2' suppported right now)
         The type of expectation to perform
+            - x is an expectation over x coordinates
+            - y is an expectation over y coordinates
             - xy is an expectation over x and y coordinates
             - x^2y^2 is an expectation over x^2 and y^2 coordinate values
     width : int
@@ -319,11 +321,16 @@ class Expectation(Initializer):
         n_inputs, n_outputs = shape
 
         if n_inputs != self.width*self.height:
+            print n_inputs
+            print self.width
             raise RuntimeError(
                 "width and height do not multiply to input dimension")
-        if n_outputs != 2:
+        if n_outputs != 2 and (self.option is 'xy' or self.option is 'x^2y^2'):
             raise RuntimeError(
-                "expectation initializer currently requires output of size 2 (for x+y)")
+                "expectation initializer requires output of size 2 (for option xy or x^2y^2)")
+        if n_outputs != 1 and (self.option is 'x' or self.option is 'y'):
+            raise RuntimeError(
+                "expectation initializer requires output of size 1 (for option x or y)")
 
         for x in range(self.width):
             for y in range(self.height):
@@ -331,11 +338,11 @@ class Expectation(Initializer):
                     if k == 0:  # output x coordiante
                         if self.option == 'xy':
                             w[y*self.width+x,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
+                        elif self.option == 'y':
+                            w[y*self.width+x,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
                         else: # self.option = 'x^2y^2':
                             w[y*self.width+x,k] = (2*(np.float32(x)/(self.width-1) - 0.5))**2
-                        #w[y+x*self.height,k] = 2*(np.float32(x)/(self.width-1) - 0.5)
                     else:  # output y coordinate
-                        #w[y+x*self.height,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
                         if self.option == 'xy':
                             w[y*self.width+x,k] = 2*(np.float32(y)/(self.height-1) - 0.5)
                         else: # self.option = 'x^2y^2':

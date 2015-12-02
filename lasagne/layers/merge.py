@@ -339,6 +339,8 @@ class ElemwiseMergeLayer(MergeLayer):
 
         # Check for compatibility with inferred output shape
         if not all(match(shape, output_shape) for shape in input_shapes):
+            print(input_shapes)
+            print(output_shape)
             raise ValueError("Mismatch: not all input shapes are the same")
         return output_shape
 
